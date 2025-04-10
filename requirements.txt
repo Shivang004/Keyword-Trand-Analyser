@@ -4,3 +4,6 @@ numpy
 torch
 sentence-transformers
 matplotlib
+scikit-learn
+typing-extensions
+watchdog
