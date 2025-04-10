@@ -16,7 +16,7 @@ FILE_MAP = {
     "Moderate (1.0 threshold, ~3000)": "labeled_clusters_dt1.json",
     "Broad (1.5 threshold, ~1600)": "labeled_clusters_dt1.5.json"
 }
-DATA_DIR = "./labeled_cluster_results"
+DATA_DIR = "./label_cluster_results"
 
 # === Load all datasets once ===
 @st.cache_data
