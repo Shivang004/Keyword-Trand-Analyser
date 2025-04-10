@@ -8,6 +8,7 @@ from sentence_transformers import SentenceTransformer, util
 import numpy as np
 import torch
 import warnings
+import threading
 warnings.filterwarnings("ignore")
 
 # === CONFIG ===
@@ -17,8 +18,9 @@ FILE_MAP = {
     "Broad (1.5 threshold, ~1600)": "labeled_clusters_dt1.5.json"
 }
 DATA_DIR = "./label_cluster_results"
+EMBED_DIR = "./precomputed_embeddings"
 
-# === Load all datasets once ===
+# === Load cluster data once ===
 @st.cache_data
 def load_all_clusters():
     data = {}
@@ -31,20 +33,31 @@ def load_all_clusters():
 
 cluster_data = load_all_clusters()
 
-# === Load embeddings for semantic search ===
+# === Load model once ===
 @st.cache_resource
 def load_model():
     return SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
 
 model = load_model()
 
-@st.cache_data
-def get_all_keywords_and_embeddings(cluster_data):
-    all_keywords = list(set(kw for data in cluster_data.values() for kw in data.keys()))
-    embeddings = model.encode(all_keywords, show_progress_bar=False)
-    return all_keywords, embeddings
+# === Embed state (dynamic) ===
+embedding_state = {
+    "keywords": None,
+    "embeddings": None,
+    "loaded": False,
+    "current_granularity": None
+}
 
-all_keywords, all_embeddings = get_all_keywords_and_embeddings(cluster_data)
+def load_embeddings_for(granularity_label):
+    base = granularity_label.split("(")[0].strip().replace(" ", "_").lower()
+    try:
+        with open(f"{EMBED_DIR}/{base}_keywords.json", "r") as f:
+            embedding_state["keywords"] = json.load(f)
+        embedding_state["embeddings"] = np.load(f"{EMBED_DIR}/{base}_embeddings.npy")
+        embedding_state["loaded"] = True
+        embedding_state["current_granularity"] = granularity_label
+    except Exception as e:
+        st.error(f"Failed to load embeddings for {granularity_label}: {e}")
 
 # === UI ===
 st.title("📈 Materials Keyword Trend Tool")
@@ -52,27 +65,28 @@ st.title("📈 Materials Keyword Trend Tool")
 selected_granularity = st.selectbox("Select specificity level:", list(FILE_MAP.keys()))
 selected_data = cluster_data[selected_granularity]
 
+# Load embeddings only when granularity changes
+if selected_granularity != embedding_state["current_granularity"]:
+    embedding_state["loaded"] = False
+    threading.Thread(target=load_embeddings_for, args=(selected_granularity,), daemon=True).start()
+
 allow_multi = st.checkbox("Allow multi-select")
 query = st.text_input("Type keyword to search:")
-
 filtered_keywords = sorted([kw for kw in selected_data if query.lower() in kw.lower()])
+selected_keywords = []
 
 if allow_multi:
     selected_keywords = st.multiselect("Select keywords:", filtered_keywords)
-else:
-    selected_keywords = [st.selectbox("Select keyword:", filtered_keywords)] if filtered_keywords else []
-
-
+elif filtered_keywords:
+    selected_keywords = [st.selectbox("Select keyword:", filtered_keywords)]
 
 # === Plot ===
 def plot_keywords(keywords, data):
     years = list(range(2011, 2025))
     df = pd.DataFrame(index=years)
-
     for kw in keywords:
         year_counts = data.get(kw, {})
         df[kw] = [year_counts.get(str(y), 0) for y in years]
-
     st.line_chart(df)
     st.bar_chart(df)
     return df
@@ -96,14 +110,18 @@ st.markdown("---")
 st.subheader("🔍 Semantic Similar Keywords")
 
 sem_kw = st.text_input("Enter a keyword to find similar ones:", key="sem_kw")
-similar_keywords = []
 
-if sem_kw:
+if not embedding_state["loaded"]:
+    st.info("⏳ Loading semantic embeddings for selected granularity...")
+elif sem_kw:
     emb = model.encode([sem_kw], convert_to_tensor=True)
-    similarities = util.cos_sim(emb, all_embeddings)[0]
+    similarities = util.cos_sim(emb, torch.tensor(embedding_state["embeddings"]))[0]
     top_k = min(10, len(similarities))
     top_indices = torch.topk(similarities, k=top_k).indices.numpy()
-    similar_keywords = [all_keywords[i] for i in top_indices if all_keywords[i] != sem_kw]
+    similar_keywords = [
+        embedding_state["keywords"][i]
+        for i in top_indices if embedding_state["keywords"][i] != sem_kw
+    ]
 
     st.write("Top similar keywords found:")
     selected_similar_keywords = st.multiselect(
@@ -111,8 +129,6 @@ if sem_kw:
     )
 
     if selected_similar_keywords:
-        # Optionally merge with the currently selected keywords from earlier
         st.write("✅ Selected for plotting:", selected_similar_keywords)
-
         if st.button("Plot selected similar keywords"):
             plot_keywords(selected_similar_keywords, selected_data)
