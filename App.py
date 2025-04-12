@@ -82,14 +82,18 @@ elif filtered_keywords:
 
 # === Plot ===
 def plot_keywords(keywords, data):
-    years = list(range(2011, 2025))
+    years = [y for y in range(2011, 2025) if y != 2019]
     df = pd.DataFrame(index=years)
+
     for kw in keywords:
         year_counts = data.get(kw, {})
         df[kw] = [year_counts.get(str(y), 0) for y in years]
+
+    st.warning("⚠️ MRS data for the year **2019** is not available and has been excluded from the plots.")
     st.line_chart(df)
     st.bar_chart(df)
     return df
+
 
 if selected_keywords:
     st.subheader("📊 Trend over years")
