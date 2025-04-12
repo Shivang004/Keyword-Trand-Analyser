@@ -90,10 +90,12 @@ def plot_keywords(keywords, data):
         df[kw] = [year_counts.get(str(y), 0) for y in years]
 
     st.warning("⚠️ MRS data for the year **2019** is not available and has been excluded from the plots.")
+    
+    # Streamlit plots
     st.line_chart(df)
     st.bar_chart(df)
-    return df
 
+    return df
 
 if selected_keywords:
     st.subheader("📊 Trend over years")
@@ -105,6 +107,9 @@ if selected_keywords:
     ax.set_title("Keyword Trends")
     ax.set_xlabel("Year")
     ax.set_ylabel("Count")
+    ax.set_xticks(df.index)
+    ax.set_xticklabels([str(y) for y in df.index])
+
     buf = BytesIO()
     fig.savefig(buf, format="png")
     st.download_button("📥 Download Plot as PNG", data=buf.getvalue(), file_name="keyword_trends.png", mime="image/png")
