@@ -17,7 +17,7 @@ FILE_MAP = {
     "Moderate (1.0 threshold, ~3000)": "labeled_clusters_dt1.json",
     "Broad (1.5 threshold, ~1600)": "labeled_clusters_dt1.5.json"
 }
-DATA_DIR = "./label_cluster_results"
+DATA_DIR = "./labeled_cluster_results"
 EMBED_DIR = "./precomputed_embeddings"
 
 # === Load cluster data once ===
@@ -82,37 +82,68 @@ elif filtered_keywords:
 
 # === Plot ===
 def plot_keywords(keywords, data):
-    years = [y for y in range(2011, 2025) if y != 2019]
+    years = [y for y in range(2011, 2025) if y != 2019]  # Remove 2019
     df = pd.DataFrame(index=years)
 
     for kw in keywords:
         year_counts = data.get(kw, {})
         df[kw] = [year_counts.get(str(y), 0) for y in years]
 
-    st.warning("⚠️ MRS data for the year **2019** is not available and has been excluded from the plots.")
-    
-    # Streamlit plots
+    st.markdown("📈 **Line Chart**")
     st.line_chart(df)
+
+    st.markdown("📊 **Bar Chart**")
     st.bar_chart(df)
 
     return df
 
 if selected_keywords:
-    st.subheader("📊 Trend over years")
+    st.subheader("📊 Trend over Years")
+
+    # Plotting
     df = plot_keywords(selected_keywords, selected_data)
 
-    # Save plot button
+    # Note about 2019
+    st.info("ℹ️ **Note:** Data for the year 2019 is not available and has been excluded from the charts.")
+
+    # Matplotlib download option
     fig, ax = plt.subplots()
     df.plot(ax=ax)
     ax.set_title("Keyword Trends")
     ax.set_xlabel("Year")
     ax.set_ylabel("Count")
-    ax.set_xticks(df.index)
-    ax.set_xticklabels([str(y) for y in df.index])
-
     buf = BytesIO()
     fig.savefig(buf, format="png")
     st.download_button("📥 Download Plot as PNG", data=buf.getvalue(), file_name="keyword_trends.png", mime="image/png")
+
+# Section separator and top-N tech
+st.markdown("---")
+st.subheader("🏆 Top N Technologies in a Specific Year")
+
+
+top_n = st.number_input("Enter the number of top technologies to display:", min_value=1, max_value=100, value=10)
+selected_year = st.selectbox("Select a year:", list(range(2011, 2025)))
+
+if st.button("Show Top Technologies"):
+    keyword_counts = {
+        kw: int(selected_data.get(kw, {}).get(str(selected_year), 0))
+        for kw in selected_data
+    }
+    sorted_keywords = sorted(keyword_counts.items(), key=lambda x: x[1], reverse=True)
+    top_keywords = sorted_keywords[:top_n]
+
+    if top_keywords:
+        top_df = pd.DataFrame(top_keywords, columns=["Keyword", f"Count in {selected_year}"])
+        st.dataframe(top_df)
+
+        # Plot bar chart
+        fig, ax = plt.subplots()
+        ax.barh([kw for kw, _ in reversed(top_keywords)], [count for _, count in reversed(top_keywords)])
+        ax.set_xlabel("Count")
+        ax.set_title(f"Top {top_n} Technologies in {selected_year}")
+        st.pyplot(fig)
+    else:
+        st.warning("No data available for the selected year.")
 
 # === Semantic Search ===
 st.markdown("---")
