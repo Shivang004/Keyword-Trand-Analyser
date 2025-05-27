@@ -3,7 +3,7 @@ pandas
 numpy
 torch
 sentence-transformers
-matplotlib
+plotly
 scikit-learn
 typing-extensions
 watchdog

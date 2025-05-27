@@ -1,174 +1,400 @@
 import streamlit as st
-import pandas as pd
 import json
 import os
-import matplotlib.pyplot as plt
-from io import BytesIO
-from sentence_transformers import SentenceTransformer, util
+import pandas as pd
+import plotly.express as px
 import numpy as np
-import torch
-import warnings
-import threading
-warnings.filterwarnings("ignore")
+from sentence_transformers import SentenceTransformer
+import numpy.linalg as LA
 
-# === CONFIG ===
-FILE_MAP = {
-    "Fine-grained (0.5 threshold, ~9000)": "labeled_clusters_dt0.5.json",
-    "Moderate (1.0 threshold, ~3000)": "labeled_clusters_dt1.json",
-    "Broad (1.5 threshold, ~1600)": "labeled_clusters_dt1.5.json"
+st.set_page_config(page_title="Research Analytics Dashboard", layout="wide")
+
+# --- App config ---
+SUMMARY_OPTIONS = {
+    "Fine-grained (~9000)": "output_summary_0.5",
+    "Moderate (~4000)": "output_summary_1.0",
+    "Broad (~1800)": "output_summary_1.5"
 }
-DATA_DIR = "./label_cluster_results"
-EMBED_DIR = "./precomputed_embeddings"
 
-# === Load cluster data once ===
-@st.cache_data
-def load_all_clusters():
-    data = {}
-    for label, file in FILE_MAP.items():
-        path = os.path.join(DATA_DIR, file)
-        with open(path, "r", encoding="utf-8") as f:
-            clusters = json.load(f)
-            data[label] = clusters
-    return data
+# --- Sidebar: Summary selection ---
+st.sidebar.title("Summary Granularity")
+summary_type = st.sidebar.radio(
+    "Choose clustering granularity:",
+    list(SUMMARY_OPTIONS.keys())
+)
+DATA_DIR = SUMMARY_OPTIONS[summary_type]
 
-cluster_data = load_all_clusters()
+# --- Load main data ---
+@st.cache_resource(show_spinner=True)
+def load_data(data_dir):
+    with open(os.path.join(data_dir, 'years_summary.json'), encoding='utf-8') as f:
+        years_summary = json.load(f)
+    with open(os.path.join(data_dir, 'keywords_summary.json'), encoding='utf-8') as f:
+        keywords_summary = json.load(f)
+    with open(os.path.join(data_dir, 'countries_summary.json'), encoding='utf-8') as f:
+        countries_summary = json.load(f)
+    return years_summary, keywords_summary, countries_summary
 
-# === Load model once ===
-@st.cache_resource
+years_summary, keywords_summary, countries_summary = load_data(DATA_DIR)
+
+def top_n_items(d, n=20):
+    return dict(sorted(d.items(), key=lambda x: x[1], reverse=True)[:n])
+
+# --- Load embeddings and keywords for semantic search ---
+# Show loading spinner
+@st.cache_resource(show_spinner=True)
+def load_embeddings_and_keywords(granularity_key):
+    file_prefix_map = {
+        "Fine-grained (~9000)": "fine-grained",
+        "Moderate (~4000)": "moderate",
+        "Broad (~1800)": "broad"
+    }
+    prefix = file_prefix_map[granularity_key]
+    emb_file = os.path.join(SUMMARY_OPTIONS[granularity_key], f"{prefix}_embeddings.npy")
+    kw_file = os.path.join(SUMMARY_OPTIONS[granularity_key], f"{prefix}_keywords.json")
+    embeddings = np.load(emb_file)
+    with open(kw_file, 'r', encoding='utf-8') as f:
+        keywords = json.load(f)
+    return embeddings, keywords
+
+# --- Load SentenceTransformer model ---
+# Show loading spinner
+@st.cache_resource(show_spinner=True)
 def load_model():
     return SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
 
-model = load_model()
+def semantic_search(query, embeddings, keywords, model, top_k=20):
+    query_emb = model.encode([query])[0]
+    emb_norm = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+    query_emb_norm = query_emb / np.linalg.norm(query_emb)
+    sims = np.dot(emb_norm, query_emb_norm)
+    top_idx = np.argsort(sims)[::-1][:top_k]
+    return [(keywords[i], sims[i]) for i in top_idx]
 
-# === Embed state (dynamic) ===
-embedding_state = {
-    "keywords": None,
-    "embeddings": None,
-    "loaded": False,
-    "current_granularity": None
-}
-
-def load_embeddings_for(granularity_label):
-    base = granularity_label.split("(")[0].strip().replace(" ", "_").lower()
-    try:
-        with open(f"{EMBED_DIR}/{base}_keywords.json", "r") as f:
-            embedding_state["keywords"] = json.load(f)
-        embedding_state["embeddings"] = np.load(f"{EMBED_DIR}/{base}_embeddings.npy")
-        embedding_state["loaded"] = True
-        embedding_state["current_granularity"] = granularity_label
-    except Exception as e:
-        st.error(f"Failed to load embeddings for {granularity_label}: {e}")
-
-# === UI ===
-st.title("📈 Materials Keyword Trend Tool")
-
-selected_granularity = st.selectbox("Select specificity level:", list(FILE_MAP.keys()))
-selected_data = cluster_data[selected_granularity]
-
-# Load embeddings only when granularity changes
-if selected_granularity != embedding_state["current_granularity"]:
-    embedding_state["loaded"] = False
-    threading.Thread(target=load_embeddings_for, args=(selected_granularity,), daemon=True).start()
-
-allow_multi = st.checkbox("Allow multi-select")
-query = st.text_input("Type keyword to search:")
-filtered_keywords = sorted([kw for kw in selected_data if query.lower() in kw.lower()])
-selected_keywords = []
-
-if allow_multi:
-    selected_keywords = st.multiselect("Select keywords:", filtered_keywords)
-elif filtered_keywords:
-    selected_keywords = [st.selectbox("Select keyword:", filtered_keywords)]
-
-# === Plot ===
-def plot_keywords(keywords, data):
-    years = [y for y in range(2011, 2025) if y != 2019]  # Remove 2019
-    df = pd.DataFrame(index=years)
-
-    for kw in keywords:
-        year_counts = data.get(kw, {})
-        df[kw] = [year_counts.get(str(y), 0) for y in years]
-
-    st.markdown("📈 **Line Chart**")
-    st.line_chart(df)
-
-    st.markdown("📊 **Bar Chart**")
-    st.bar_chart(df)
-
-    return df
-
-if selected_keywords:
-    st.subheader("📊 Trend over Years")
-
-    # Plotting
-    df = plot_keywords(selected_keywords, selected_data)
-
-    # Note about 2019
-    st.info("ℹ️ **Note:** Data for the year 2019 is not available and has been excluded from the charts.")
-
-    # Matplotlib download option
-    fig, ax = plt.subplots()
-    df.plot(ax=ax)
-    ax.set_title("Keyword Trends")
-    ax.set_xlabel("Year")
-    ax.set_ylabel("Count")
-    buf = BytesIO()
-    fig.savefig(buf, format="png")
-    st.download_button("📥 Download Plot as PNG", data=buf.getvalue(), file_name="keyword_trends.png", mime="image/png")
-
-# Section separator and top-N tech
-st.markdown("---")
-st.subheader("🏆 Top N Technologies in a Specific Year")
-
-
-top_n = st.number_input("Enter the number of top technologies to display:", min_value=1, max_value=100, value=10)
-selected_year = st.selectbox("Select a year:", list(range(2011, 2025)))
-
-if st.button("Show Top Technologies"):
-    keyword_counts = {
-        kw: int(selected_data.get(kw, {}).get(str(selected_year), 0))
-        for kw in selected_data
-    }
-    sorted_keywords = sorted(keyword_counts.items(), key=lambda x: x[1], reverse=True)
-    top_keywords = sorted_keywords[:top_n]
-
-    if top_keywords:
-        top_df = pd.DataFrame(top_keywords, columns=["Keyword", f"Count in {selected_year}"])
-        st.dataframe(top_df)
-
-        # Plot bar chart
-        fig, ax = plt.subplots()
-        ax.barh([kw for kw, _ in reversed(top_keywords)], [count for _, count in reversed(top_keywords)])
-        ax.set_xlabel("Count")
-        ax.set_title(f"Top {top_n} Technologies in {selected_year}")
-        st.pyplot(fig)
-    else:
-        st.warning("No data available for the selected year.")
-
-# === Semantic Search ===
-st.markdown("---")
-st.subheader("🔍 Semantic Similar Keywords")
-
-sem_kw = st.text_input("Enter a keyword to find similar ones:", key="sem_kw")
-
-if not embedding_state["loaded"]:
-    st.info("⏳ Loading semantic embeddings for selected granularity...")
-elif sem_kw:
-    emb = model.encode([sem_kw], convert_to_tensor=True)
-    similarities = util.cos_sim(emb, torch.tensor(embedding_state["embeddings"]))[0]
-    top_k = min(10, len(similarities))
-    top_indices = torch.topk(similarities, k=top_k).indices.numpy()
-    similar_keywords = [
-        embedding_state["keywords"][i]
-        for i in top_indices if embedding_state["keywords"][i] != sem_kw
+# --- Sidebar navigation ---
+st.sidebar.title("Navigation")
+section = st.sidebar.radio(
+    "Go to Section",
+    [
+        "1. Year → Keywords",
+        "2. Year → Countries",
+        "3. Keyword → Years",
+        "4. Keyword → Countries",
+        "5. Country → Years",
+        "6. Country → Keywords",
+        "7. Year + Keyword → Countries",
+        "8. Year + Country → Keywords",
+        "9. Keyword + Country → Years",
+        "Semantic Search"
     ]
+)
 
-    st.write("Top similar keywords found:")
-    selected_similar_keywords = st.multiselect(
-        "Select keywords to add to plot:", similar_keywords, key="semantic_multiselect"
-    )
+st.title("📊 Research Analytics Dashboard")
+st.markdown(
+    """
+    **Explore research trends by year, country, and keyword.**
+    - Use the sidebar to select the **summary granularity** and navigate between different types of analyses.
+    - Select multiple keywords or countries where possible for comparative analytics!
+    """
+)
+st.info("ℹ️ **Note:** Data for the year 2019 is not available and has been excluded from the charts.")
 
-    if selected_similar_keywords:
-        st.write("✅ Selected for plotting:", selected_similar_keywords)
-        if st.button("Plot selected similar keywords"):
-            plot_keywords(selected_similar_keywords, selected_data)
+# --- Sections 1 to 9 (same as your original code, using Plotly for charts) ---
+
+if section == "1. Year → Keywords":
+    st.header("Most Popular Keywords in a Selected Year")
+    year = st.selectbox("Select Year", sorted(years_summary.keys()))
+    n = st.slider("Top N Keywords", 5, 30, 15)
+    all_keywords = list(years_summary.get(year, {}).get('keywords', {}).keys())
+    selected_keywords = st.multiselect("Filter to specific keywords (optional):", sorted(all_keywords), default=[])
+    data = years_summary.get(year, {}).get('keywords', {})
+    if selected_keywords:
+        data = {k: v for k, v in data.items() if k in selected_keywords}
+    data = top_n_items(data, n)
+    df = pd.DataFrame({"Keyword": list(data.keys()), "Count": list(data.values())})
+
+    fig = px.bar(df, x="Keyword", y="Count", title=f"Top {n} Keywords in {year}")
+    st.plotly_chart(fig, use_container_width=True)
+        
+    st.dataframe(df, use_container_width=True)
+
+elif section == "2. Year → Countries":
+    st.header("Most Active Countries in a Selected Year")
+    st.warning("Note: Country data is missing for 2018.")
+    year = st.selectbox("Select Year", sorted(years_summary.keys()))
+    n = st.slider("Top N Countries", 5, 30, 15)
+    all_countries = list(years_summary.get(year, {}).get('countries', {}).keys())
+    selected_countries = st.multiselect("Filter to specific countries (optional):", sorted(all_countries), default=[])
+    data = years_summary.get(year, {}).get('countries', {})
+    if selected_countries:
+        data = {k: v for k, v in data.items() if k in selected_countries}
+    data = top_n_items(data, n)
+    df = pd.DataFrame({"Country": list(data.keys()), "Count": list(data.values())})
+    fig = px.bar(df, x="Country", y="Count", title=f"Top {n} Countries in {year}")
+    st.plotly_chart(fig, use_container_width=True)
+    fig = px.choropleth(df, locations='Country',
+                    locationmode='country names',  # use country names to identify countries
+                    color='Count',
+                    color_continuous_scale='Viridis',
+                    title='Country Intensity Map')
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.dataframe(df, use_container_width=True)
+
+elif section == "3. Keyword → Years":
+    st.header("Keyword Popularity Over Time")
+    all_keywords = sorted(list(keywords_summary.keys()))
+    selected_keywords = st.multiselect("Select Keywords", all_keywords, default=all_keywords[:1])
+    chart_df = pd.DataFrame()
+    for kw in selected_keywords:
+        data = keywords_summary[kw]['years']
+        df = pd.DataFrame({"Year": list(data.keys()), kw: list(data.values())})
+        df = df.sort_values('Year')
+        df.set_index("Year", inplace=True)
+        chart_df = pd.concat([chart_df, df], axis=1)
+    if not chart_df.empty:
+        st.subheader("Trend Over Time")
+        st.line_chart(chart_df, use_container_width=True)
+
+        st.subheader("Year-wise Distribution")
+        fig = px.bar(chart_df, title="Year-wise Distribution")
+        st.plotly_chart(fig, use_container_width=True)
+
+    else:
+        st.info("Please select at least one keyword.")
+
+elif section == "4. Keyword → Countries":
+    st.header("Countries Researching Keyword(s)")
+    st.warning("Note: Country data is missing for 2018.")
+    all_keywords = sorted(list(keywords_summary.keys()))
+    selected_keywords = st.multiselect("Select Keywords", all_keywords, default=all_keywords[:1])
+    n = st.slider("Top N Countries", 5, 30, 15)
+    if selected_keywords:
+        chart_df = pd.DataFrame()
+        for kw in selected_keywords:
+            data = keywords_summary[kw]['countries']
+            data = top_n_items(data, n)
+            df = pd.DataFrame({"Country": list(data.keys()), kw: list(data.values())})
+            df.set_index("Country", inplace=True)
+            chart_df = pd.concat([chart_df, df], axis=1)
+        fig = px.bar(chart_df, title="Countries Researching Keyword(s)")
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Create choropleth map using the data for the last keyword
+        choropleth_df = pd.DataFrame({"Country": list(data.keys()), "Value": list(data.values())})
+        fig = px.choropleth(choropleth_df, 
+                    locations='Country',
+                    locationmode='country names',
+                    color='Value',
+                    color_continuous_scale='Viridis',
+                    title=f'Country Intensity Map for {kw}')
+
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(chart_df.reset_index(), use_container_width=True)
+    else:
+        st.info("Please select at least one keyword.")
+
+elif section == "5. Country → Years":
+    st.header("Country's Research Activity Over Time")
+    st.warning("Note: Country data is missing for 2018.")
+    all_countries = sorted(list(countries_summary.keys()))
+    selected_countries = st.multiselect("Select Countries", all_countries, default=all_countries[:1])
+    chart_df = pd.DataFrame()
+    for country in selected_countries:
+        data = countries_summary[country]['years']
+        df = pd.DataFrame({"Year": list(data.keys()), country: list(data.values())})
+        df = df.sort_values('Year')
+        df.set_index("Year", inplace=True)
+        chart_df = pd.concat([chart_df, df], axis=1)
+    if not chart_df.empty:
+        st.subheader("Trend Over Time")
+        st.line_chart(chart_df, use_container_width=True)
+        st.subheader("Year-wise Distribution")
+        fig = px.bar(chart_df, title="Year-wise Distribution")
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(chart_df.reset_index(), use_container_width=True)
+    else:
+        st.info("Please select at least one country.")
+
+elif section == "6. Country → Keywords":
+    st.header("Country's Top Research Focus Areas")
+    st.warning("Note: Country data is missing for 2018.")
+    all_countries = sorted(list(countries_summary.keys()))
+    selected_countries = st.multiselect("Select Countries", all_countries, default=all_countries[:1])
+    n = st.slider("Top N Keywords", 5, 30, 15)
+    if selected_countries:
+        chart_df = pd.DataFrame()
+        for country in selected_countries:
+            data = countries_summary[country]['keywords']
+            data = top_n_items(data, n)
+            df = pd.DataFrame({"Keyword": list(data.keys()), country: list(data.values())})
+            df.set_index("Keyword", inplace=True)
+            chart_df = pd.concat([chart_df, df], axis=1)
+        fig = px.bar(chart_df, title="Country's Top Research Focus Areas")
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(chart_df.reset_index(), use_container_width=True)
+    else:
+        st.info("Please select at least one country.")
+
+elif section == "7. Year + Keyword → Countries":
+    st.header("Which Countries Researched a Keyword in a Year?")
+    st.warning("Note: Country data is missing for 2018.")
+    year = st.selectbox("Select Year", sorted(years_summary.keys()))
+    all_keywords = sorted(list(years_summary[year]['keywords'].keys()))
+    selected_keywords = st.multiselect("Select Keywords", all_keywords, default=all_keywords[:1])
+    n = st.slider("Top N Countries", 5, 30, 15)
+    chart_df = pd.DataFrame()
+    for keyword in selected_keywords:
+        data = years_summary[year]['keyword_countries'].get(keyword, {})
+        data = top_n_items(data, n)
+        df = pd.DataFrame({"Country": list(data.keys()), keyword: list(data.values())})
+        df.set_index("Country", inplace=True)
+        chart_df = pd.concat([chart_df, df], axis=1)
+    if not chart_df.empty:
+        fig = px.bar(chart_df, title="Which Countries Researched a Keyword in a Year?")
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Create choropleth map using the data for the last keyword
+        choropleth_df = pd.DataFrame({"Country": list(data.keys()), "Value": list(data.values())})
+        fig = px.choropleth(choropleth_df, 
+                    locations='Country',
+                    locationmode='country names',
+                    color='Value',
+                    color_continuous_scale='Viridis',
+                    title=f'Country Intensity Map for {keyword}')
+
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(chart_df.reset_index(), use_container_width=True)
+    else:
+        st.warning("No data available for this selection.")
+
+elif section == "8. Year + Country → Keywords":
+    st.header("What Did a Country Research in a Year?")
+    st.warning("Note: Country data is missing for 2018.")
+    year = st.selectbox("Select Year", sorted(years_summary.keys()))
+    all_countries = sorted(list(years_summary[year]['countries'].keys()))
+    selected_countries = st.multiselect("Select Countries", all_countries, default=all_countries[:1])
+    n = st.slider("Top N Keywords", 5, 30, 15)
+    chart_df = pd.DataFrame()
+    for country in selected_countries:
+        data = years_summary[year]['country_keywords'].get(country, {})
+        data = top_n_items(data, n)
+        df = pd.DataFrame({"Keyword": list(data.keys()), country: list(data.values())})
+        df.set_index("Keyword", inplace=True)
+        chart_df = pd.concat([chart_df, df], axis=1)
+    if not chart_df.empty:
+        fig = px.bar(chart_df, title="What Did a Country Research in a Year?")
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(chart_df.reset_index(), use_container_width=True)
+    else:
+        st.warning("No data available for this selection.")
+
+elif section == "9. Keyword + Country → Years":
+    st.header("When Was a Country Most Active in a Keyword?")
+    st.warning("Note: Country data is missing for 2018.")
+    all_keywords = sorted(list(keywords_summary.keys()))
+    all_countries = sorted(list(countries_summary.keys()))
+    selected_keywords = st.multiselect("Select Keywords", all_keywords, default=all_keywords[:1])
+    selected_countries = st.multiselect("Select Countries", all_countries, default=all_countries[:1])
+    chart_df = pd.DataFrame()
+    
+    for keyword in selected_keywords:
+        for country in selected_countries:
+            trend = {}
+            for year, yearinfo in years_summary.items():
+                count = yearinfo['keyword_countries'].get(keyword, {}).get(country, 0)
+                if count > 0:
+                    trend[year] = count
+            if trend:
+                df = pd.DataFrame({"Year": list(trend.keys()), f"{keyword} ({country})": list(trend.values())})
+                df = df.sort_values('Year')
+                df.set_index("Year", inplace=True)
+                chart_df = pd.concat([chart_df, df], axis=1)
+    
+    if not chart_df.empty:
+        st.subheader("Trend Over Time")
+        st.line_chart(chart_df, use_container_width=True)
+        st.subheader("Year-wise Distribution")
+        fig = px.bar(chart_df, title="Year-wise Distribution")
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(chart_df.reset_index(), use_container_width=True)
+    else:
+        st.warning("No data available for this selection.")
+
+# --- Semantic Search Section ---
+if section == "Semantic Search":
+    st.header("Semantic Search for Keywords")
+
+    # Use granularity selected in sidebar automatically
+    granularity_for_search = summary_type
+    
+    embeddings, embed_keywords = load_embeddings_and_keywords(granularity_for_search)
+    model = load_model()
+    
+    query = st.text_input("Enter keyword or phrase to search:")
+    
+    if query:
+        results = semantic_search(query, embeddings, embed_keywords, model)
+        matched_keywords = [kw for kw, score in results]
+        scores = [score for kw, score in results]
+        
+        st.write(f"Top {len(matched_keywords)} matched keywords:")
+        for kw, score in results:
+            st.write(f"{kw} — similarity: {score:.3f}")
+        
+        selected_keywords = st.multiselect("Select keywords for analysis", matched_keywords)
+        
+        if selected_keywords:
+            st.write("### Keyword-based analyses")
+            
+            # Section 3: Keyword → Years
+            chart_df = pd.DataFrame()
+            for kw in selected_keywords:
+                data = keywords_summary.get(kw, {}).get('years', {})
+                df = pd.DataFrame({"Year": list(data.keys()), kw: list(data.values())})
+                df = df.sort_values('Year')
+                df.set_index("Year", inplace=True)
+                chart_df = pd.concat([chart_df, df], axis=1)
+            if not chart_df.empty:
+                st.subheader("Trend Over Time (Keyword → Years)")
+                st.line_chart(chart_df, use_container_width=True)
+            
+            # Section 4: Keyword → Countries
+            n = st.slider("Top N Countries for Keyword Research", 5, 30, 15, key="ss_n")
+            chart_df2 = pd.DataFrame()
+            for kw in selected_keywords:
+                data = keywords_summary.get(kw, {}).get('countries', {})
+                data = top_n_items(data, n)
+                df = pd.DataFrame({"Country": list(data.keys()), kw: list(data.values())})
+                df.set_index("Country", inplace=True)
+                chart_df2 = pd.concat([chart_df2, df], axis=1)
+            if not chart_df2.empty:
+                st.subheader("Countries Researching Keyword(s)")
+                fig2 = px.bar(chart_df2, title="Keyword → Countries")
+                st.plotly_chart(fig2, use_container_width=True)
+            
+            # Section 9: Keyword + Country → Years
+            all_countries = sorted(list(countries_summary.keys()))
+            selected_countries = st.multiselect("Select Countries for Yearly Keyword Activity", all_countries, default=all_countries[:1], key="ss_countries")
+            chart_df3 = pd.DataFrame()
+            for keyword in selected_keywords:
+                for country in selected_countries:
+                    trend = {}
+                    for year, yearinfo in years_summary.items():
+                        count = yearinfo.get('keyword_countries', {}).get(keyword, {}).get(country, 0)
+                        if count > 0:
+                            trend[year] = count
+                    if trend:
+                        df = pd.DataFrame({"Year": list(trend.keys()), f"{keyword} ({country})": list(trend.values())})
+                        df = df.sort_values('Year')
+                        df.set_index("Year", inplace=True)
+                        chart_df3 = pd.concat([chart_df3, df], axis=1)
+            if not chart_df3.empty:
+                st.subheader("Keyword + Country → Years Trend")
+                st.line_chart(chart_df3, use_container_width=True)
+
+
+# --- Footer ---
+st.markdown("<hr/>", unsafe_allow_html=True)
+st.caption("Made with ❤️ using Streamlit | Shivang Agarwal")
