@@ -8,7 +8,65 @@ from sentence_transformers import SentenceTransformer
 import numpy.linalg as LA
 
 st.set_page_config(page_title="Research Analytics Dashboard", layout="wide")
+QUICK_GUIDE = """
+## 🚀 Quick Start Guide
 
+### Step 1: Choose Your Data Granularity
+Select your preferred detail level from the **Summary Granularity** section in the sidebar:
+- **Fine-grained (~9000)** - Most detailed analysis
+- **Moderate (~4000)** - Balanced view (recommended)
+- **Broad (~1800)** - High-level overview
+
+### Step 2: Navigate Through Analysis Types
+Click on any analysis from the **Navigation** menu in the sidebar:
+
+**📅 Year-Based Analysis**
+- **"1. Year → Keywords"** - See what topics were popular in a specific year
+- **"2. Year → Countries"** - Find which countries were most active in a year
+
+**🔑 Keyword-Based Analysis** 
+- **"3. Keyword → Years"** - Track how topics evolved over time
+- **"4. Keyword → Countries"** - See which countries research specific topics
+
+**🌍 Country-Based Analysis**
+- **"5. Country → Years"** - View a country's research activity over time  
+- **"6. Country → Keywords"** - Discover what topics countries focus on
+
+**🔄 Combined Analysis**
+- **"7. Year + Keyword → Countries"** - Which countries researched X topic in Y year?
+- **"8. Year + Country → Keywords"** - What did X country research in Y year?
+- **"9. Keyword + Country → Years"** - When was X country most active in Y topic?
+
+### Step 3: Use Interactive Features
+- **Select multiple items** where available for comparisons
+- **Adjust sliders** to show more/fewer results
+- **Hover over charts** for detailed values
+- **View data tables** below charts for exact numbers
+
+### Step 4: Try Semantic Search
+Click **"Semantic Search"** for AI-powered keyword discovery:
+1. Type any research term or phrase
+2. Get 20 most similar keywords with similarity scores
+3. Select interesting keywords for automatic analysis
+4. View trends, countries, and timeline data instantly
+
+---
+*💡 **Pro Tip**: Start with "Moderate" granularity and use Semantic Search to discover relevant keywords you might not have thought of!*
+"""
+
+# Insert this in your main code after the title:
+st.title("📊 Research Analytics Dashboard")
+# Option 1: Expandable section
+with st.expander(" 📖 How to Use This Dashboard - Quick Start Guide"):
+    st.markdown(QUICK_GUIDE)
+
+st.markdown(
+    """
+    **Explore research trends by year, country, and keyword.**
+    - Use the sidebar to select the **summary granularity** and navigate between different types of analyses.
+    - Select multiple keywords or countries where possible for comparative analytics!
+    """
+)
 # --- App config ---
 SUMMARY_OPTIONS = {
     "Fine-grained (~9000)": "output_summary_0.5",
@@ -89,14 +147,6 @@ section = st.sidebar.radio(
     ]
 )
 
-st.title("📊 Research Analytics Dashboard")
-st.markdown(
-    """
-    **Explore research trends by year, country, and keyword.**
-    - Use the sidebar to select the **summary granularity** and navigate between different types of analyses.
-    - Select multiple keywords or countries where possible for comparative analytics!
-    """
-)
 st.info("ℹ️ **Note:** Data for the year 2019 is not available and has been excluded from the charts.")
 
 # --- Sections 1 to 9 (same as your original code, using Plotly for charts) ---
